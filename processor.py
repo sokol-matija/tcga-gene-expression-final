@@ -45,34 +45,86 @@ def extract_gene_expressions(df, target_genes=TARGET_GENES):
         print("Empty DataFrame provided")
         return pd.DataFrame()
     
+    # Debug information
+    print(f"DataFrame has shape: {df.shape}")
+    print(f"First 5 columns: {df.columns[:5].tolist()}")
+    print(f"First column values (first 5): {df.iloc[:5, 0].tolist()}")
+    
     # Check if the first column contains gene names (common format)
     gene_column = df.columns[0]  # Usually 'Gene' or similar
     
     try:
-        # Check if DataFrame has genes as first column
-        if any(gene in str(df[gene_column]) for gene in target_genes):
-            # Filter rows where the gene is in our target list
-            filtered_df = df[df[gene_column].isin(target_genes)]
+        # First approach: Check if the first column contains gene names
+        # Convert to string to handle any non-string types
+        df[gene_column] = df[gene_column].astype(str)
+        
+        # Try exact matching
+        filtered_df = df[df[gene_column].isin(target_genes)]
+        
+        # If we didn't find any matches, try case-insensitive matching
+        if filtered_df.empty:
+            print("No exact matches found, trying case-insensitive matching...")
+            filtered_df = df[df[gene_column].str.upper().isin([g.upper() for g in target_genes])]
+        
+        # If we still don't have matches, try partial matching (gene might be part of a longer string)
+        if filtered_df.empty:
+            print("No case-insensitive matches found, trying partial matching...")
+            matches = []
+            for gene in target_genes:
+                pattern = rf".*{gene}.*"
+                matches.extend(df[df[gene_column].str.contains(pattern, case=False, regex=True)].index.tolist())
+            if matches:
+                filtered_df = df.loc[matches]
+        
+        # Second approach: If genes are in the index
+        if filtered_df.empty:
+            print("Checking if genes are in the index...")
+            if hasattr(df.index, 'str'):  # Make sure index has string methods
+                matches = []
+                for gene in target_genes:
+                    if gene in df.index.tolist():
+                        matches.append(gene)
+                    else:
+                        # Try case-insensitive
+                        for idx in df.index:
+                            if str(gene).upper() == str(idx).upper():
+                                matches.append(idx)
+                if matches:
+                    filtered_df = df.loc[matches]
+        
+        # Third approach: Maybe each gene is a column
+        if filtered_df.empty:
+            print("Checking if genes are columns...")
+            gene_cols = []
+            for gene in target_genes:
+                # Check for exact match in column names
+                if gene in df.columns:
+                    gene_cols.append(gene)
+                else:
+                    # Try case-insensitive
+                    for col in df.columns:
+                        if str(gene).upper() == str(col).upper():
+                            gene_cols.append(col)
             
-            # If we didn't find any matches, try case-insensitive matching
-            if filtered_df.empty:
-                filtered_df = df[df[gene_column].str.upper().isin([g.upper() for g in target_genes])]
+            if gene_cols:
+                # Create a new DataFrame with gene names as the first column
+                new_df = pd.DataFrame({"Gene": gene_cols})
+                # For each patient (row in original df), add their values for these genes
+                for patient in df.index:
+                    patient_values = []
+                    for gene in gene_cols:
+                        patient_values.append(df.loc[patient, gene])
+                    new_df[patient] = patient_values
+                filtered_df = new_df
                 
+        if not filtered_df.empty:
+            print(f"Found {len(filtered_df)} genes out of {len(target_genes)} target genes")
             return filtered_df
         
-        # If genes are not in the first column, check if they are in the index
-        elif any(gene in str(df.index) for gene in target_genes):
-            # Filter rows where the index is in our target list
-            filtered_df = df[df.index.isin(target_genes)]
-            
-            # If we didn't find any matches, try case-insensitive matching
-            if filtered_df.empty and hasattr(df.index, 'str'):
-                filtered_df = df[df.index.str.upper().isin([g.upper() for g in target_genes])]
-                
-            return filtered_df
-        
-        # If we can't find the genes in either place, print a warning
-        print(f"Could not identify target genes in the dataset. First column: {gene_column}")
+        # If we still couldn't find the genes, print more diagnostic info
+        print(f"Could not identify target genes in the dataset.")
+        print(f"DataFrame columns: {df.columns.tolist()[:10]}")
+        print(f"Looking for genes: {target_genes}")
         
         # Return an empty DataFrame
         return pd.DataFrame()
@@ -143,12 +195,70 @@ def process_tsv_file(file_path):
     print(f"Reading file: {file_path}")
     df = read_tsv_file(file_path)
     if df is None:
+        print(f"Failed to read file: {file_path}")
         return []
     
     # Print info about the DataFrame
     print(f"DataFrame shape: {df.shape}")
     print(f"DataFrame columns (first 5): {df.columns[:5]}")
     
+    # Handle the special TCGA data format
+    # The first column is often 'sample' and the gene symbols are in the row index
+    if 'sample' in df.columns and df.shape[0] > 10000:  # TCGA files often have ~20k genes
+        print("Detected TCGA format with genes as rows")
+        # Transpose the dataframe so genes become columns
+        print("Transposing dataframe to make genes the columns")
+        # First column becomes the new index
+        df = df.set_index(df.columns[0])
+        # Transpose so patients are rows, genes are columns
+        df = df.transpose()
+        print(f"After transpose, shape: {df.shape}")
+        
+        # Create a new dataframe with the genes we want
+        selected_genes = []
+        for gene in TARGET_GENES:
+            if gene in df.columns:
+                selected_genes.append(gene)
+            else:
+                print(f"Gene {gene} not found in dataset")
+                
+        if not selected_genes:
+            print(f"None of the target genes found in dataset {file_path}")
+            # Try a fallback - look for similar gene names
+            for col in df.columns:
+                for gene in TARGET_GENES:
+                    if gene.upper() in str(col).upper():
+                        print(f"Found potential match: {col} for {gene}")
+                        selected_genes.append(col)
+                        
+        if not selected_genes:
+            print(f"Still couldn't find any target genes in {file_path}")
+            return []
+            
+        # Create patient records
+        patients = []
+        for patient_id, row in df.iterrows():
+            patient_data = {
+                "patient_id": patient_id,
+                "cancer_cohort": cohort_name,
+                "gene_expressions": {}
+            }
+            
+            # Add expression values for each target gene
+            for gene in selected_genes:
+                try:
+                    expression_value = float(row[gene])
+                except (ValueError, TypeError):
+                    expression_value = str(row[gene])
+                    
+                patient_data["gene_expressions"][gene] = expression_value
+            
+            patients.append(patient_data)
+            
+        print(f"Generated {len(patients)} patient records with {len(selected_genes)} genes each")
+        return patients
+    
+    # If it's not the special TCGA format, proceed with standard processing
     # Extract target gene expressions
     print(f"Extracting expressions for {len(TARGET_GENES)} target genes")
     gene_df = extract_gene_expressions(df)

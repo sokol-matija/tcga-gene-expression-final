@@ -32,16 +32,19 @@ MONGO_COLLECTION_NAME = "patient_expressions"
 # Xena Browser settings
 XENA_BASE_URL = "https://xenabrowser.net/datapages/"
 
-# List of target genes to analyze
+# List of target genes to analyze - cGAS-STING pathway genes as specified in the requirements
 TARGET_GENES = [
-    'TP53',    # Tumor protein p53
-    'BRCA1',   # Breast cancer type 1 susceptibility protein
-    'BRCA2',   # Breast cancer type 2 susceptibility protein
-    'EGFR',    # Epidermal growth factor receptor
-    'KRAS',    # KRAS proto-oncogene
-    'PTEN',    # Phosphatase and tensin homolog
-    'PIK3CA',  # Phosphatidylinositol-4,5-bisphosphate 3-kinase catalytic subunit alpha
-    'AKT1',    # AKT serine/threonine kinase 1
-    'MYC',     # MYC proto-oncogene
-    'BRAF'     # B-Raf proto-oncogene
+    'C6orf150',  # cGAS
+    'TMEM173',   # STING
+    'CCL5',      # Chemokine
+    'CXCL10',    # Chemokine
+    'CXCL9',     # Chemokine
+    'CXCL11',    # Chemokine
+    'NFKB1',     # Transcription factor
+    'IKBKE',     # Kinase
+    'IRF3',      # Transcription factor
+    'TREX1',     # Exonuclease
+    'ATM',       # Kinase
+    'IL6',       # Interleukin
+    'CXCL8'      # IL8 (Interleukin 8)
 ] 

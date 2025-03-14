@@ -14,7 +14,7 @@ from io import BytesIO
 from scraper import download_all_datasets, download_clinical_data, get_sample_dataset
 from storage import ensure_bucket_exists, upload_file, download_file, list_objects
 from processor import process_tsv_file, merge_with_clinical_data, calculate_pathway_score
-from database import insert_patient_data, get_patient_data, get_unique_cohorts, get_patient_count
+from database import insert_patient_data, get_patient_data, get_unique_cohorts, get_patient_count, clear_collection
 from visualizer import (
     plot_gene_expressions_by_cohort, 
     plot_heatmap, 
@@ -34,13 +34,15 @@ st.set_page_config(
 # Create directories if they don't exist
 os.makedirs("data", exist_ok=True)
 
-def fetch_and_store_data(use_sample_data=False, max_datasets=1):
+def fetch_and_store_data(use_sample_data=False, max_datasets=1, use_local_files=False, local_files_dir="data_test"):
     """
     Fetch data from Xena Browser and store in MiniO.
     
     Args:
         use_sample_data (bool): Whether to use sample data instead of downloading
         max_datasets (int): Maximum number of datasets to download
+        use_local_files (bool): Whether to use already downloaded files
+        local_files_dir (str): Directory containing already downloaded files
         
     Returns:
         list: Paths to downloaded files
@@ -65,6 +67,26 @@ def fetch_and_store_data(use_sample_data=False, max_datasets=1):
                     'code': 'SAMPLE',
                     'name': 'Gene Expression'
                 })
+    elif use_local_files:
+        # Use locally downloaded files
+        with st.spinner(f"Processing locally downloaded files from {local_files_dir}..."):
+            if os.path.exists(local_files_dir):
+                for filename in os.listdir(local_files_dir):
+                    if filename.endswith('.gz'):
+                        # Extract cohort code from filename (assuming format like "LAML_gene_expression.gz")
+                        code = filename.split('_')[0]
+                        file_path = os.path.join(local_files_dir, filename)
+                        
+                        files.append({
+                            'path': file_path,
+                            'cohort': f'TCGA {code}',
+                            'code': code,
+                            'name': 'Gene Expression'
+                        })
+                
+                st.info(f"Found {len(files)} local files to process")
+            else:
+                st.error(f"Local directory {local_files_dir} does not exist")
     else:
         # Download files from Xena Browser
         with st.spinner("Downloading gene expression files from Xena Browser..."):
@@ -89,7 +111,7 @@ def fetch_and_store_data(use_sample_data=False, max_datasets=1):
                 object_name = os.path.basename(file_path)
                 upload_file(file_path, object_name)
         
-        st.success(f"Successfully downloaded and stored {len(files)} files.")
+        st.success(f"Successfully processed and stored {len(files)} files.")
     else:
         st.error("Failed to obtain any data files.")
     
@@ -276,38 +298,109 @@ def display_visualizations():
             st.warning(f"No patients found for cohort: {selected_cohort}")
 
 def main():
-    """Main function for the Streamlit app."""
+    """Main application logic."""
     
+    # Application header
     st.title("TCGA Gene Expression Analyzer")
+    st.write("Analyze gene expression data from The Cancer Genome Atlas (TCGA)")
     
-    st.markdown("""
-    This application collects and analyzes gene expression data from The Cancer Genome Atlas (TCGA).
-    It focuses on genes in the cGAS-STING pathway, which plays a crucial role in immune response.
-    """)
+    # Sidebar options
+    st.sidebar.title("Data Options")
     
-    # Sidebar for data collection
-    st.sidebar.title("Data Collection")
+    # Database info or setup
+    db_status = st.sidebar.container()
+    patient_count = get_patient_count()
     
-    use_sample = st.sidebar.checkbox("Use sample data (for testing)", value=True)
-    include_clinical = st.sidebar.checkbox("Include clinical data", value=False)
-    
-    if not use_sample:
-        max_datasets = st.sidebar.slider(
-            "Maximum datasets to download", 
-            min_value=1, 
-            max_value=10, 
-            value=1
-        )
+    if patient_count > 0:
+        db_status.success(f"MongoDB: {patient_count} patient records")
     else:
-        max_datasets = 1
+        db_status.warning("MongoDB: No data loaded")
     
-    if st.sidebar.button("Fetch and Process Data"):
-        # Step 1: Fetch and store data
-        files = fetch_and_store_data(use_sample, max_datasets)
+    # Data processing section
+    st.sidebar.header("Data Processing")
+    
+    # Option to use sample data instead of real data
+    use_sample = st.sidebar.checkbox("Use sample data instead of real data", False)
+    
+    # Option to limit the number of datasets to process
+    process_all = st.sidebar.checkbox("Process all available datasets", True)
+    max_cohorts = None if process_all else st.sidebar.slider(
+        "Maximum number of cohorts to process", 
+        min_value=1, 
+        max_value=20, 
+        value=5
+    )
+    
+    # Option to include clinical data
+    include_clinical = st.sidebar.checkbox("Include clinical data", True)
+    
+    # Option to use locally downloaded files
+    use_local_files = st.sidebar.checkbox("Use locally downloaded files", True)
+    local_files_dir = st.sidebar.text_input(
+        "Local files directory", 
+        value="data_test_subset"
+    )
+    
+    # Option to use MongoDB
+    use_mongodb = st.sidebar.checkbox("Store data in MongoDB", True)
+    
+    # Process & Import button
+    if st.sidebar.button("Process & Import Data"):
+        # Clear the current data if requested
+        clear_mongo = st.sidebar.checkbox("Clear existing MongoDB data before import", False)
+        if clear_mongo:
+            with st.spinner("Clearing existing data from MongoDB..."):
+                clear_collection()
+                st.success("Existing data cleared from MongoDB")
+        
+        # Step 1: Get the data files
+        files = fetch_and_store_data(
+            use_sample_data=use_sample, 
+            max_datasets=max_cohorts if not process_all else None, 
+            use_local_files=use_local_files, 
+            local_files_dir=local_files_dir
+        )
+        
+        # Limit number of files to process if needed
+        if use_local_files and not process_all and max_cohorts is not None and len(files) > max_cohorts:
+            st.info(f"Limiting processing to {max_cohorts} cohorts out of {len(files)} available")
+            files = files[:max_cohorts]
         
         # Step 2: Process and store in MongoDB
-        if files:
+        if files and use_mongodb:
             process_and_store_data(files, include_clinical)
+        elif files:
+            # If not using MongoDB, just process the files
+            all_patients = []
+            for file_info in files:
+                file_path = file_info['path']
+                with st.spinner(f"Processing {os.path.basename(file_path)}..."):
+                    patients = process_tsv_file(file_path)
+                    
+                    if patients:
+                        st.info(f"Extracted data for {len(patients)} patients from {os.path.basename(file_path)}")
+                        all_patients.extend(patients)
+                    else:
+                        st.warning(f"No patient data extracted from {os.path.basename(file_path)}")
+            
+            # Merge with clinical data if requested
+            if include_clinical and all_patients:
+                with st.spinner("Downloading and processing clinical data..."):
+                    clinical_path = download_clinical_data()
+                    
+                    if clinical_path:
+                        all_patients = merge_with_clinical_data(all_patients, clinical_path)
+                        st.info("Clinical data merged with gene expression data")
+                    else:
+                        st.warning("Failed to download clinical data")
+            
+            # Calculate pathway scores
+            if all_patients:
+                with st.spinner("Calculating pathway scores..."):
+                    all_patients = calculate_pathway_score(all_patients)
+                    st.info("Pathway scores calculated")
+            
+            st.success(f"Successfully processed {len(all_patients)} patient records (not stored in MongoDB)")
     
     # Main content area
     tab1, tab2 = st.tabs(["Data Overview", "Visualizations"])
@@ -316,17 +409,10 @@ def main():
         display_data_info()
         
         # Display target genes information
-        st.subheader("Target Genes (cGAS-STING Pathway)")
+        st.subheader("Target Genes (Cancer-Related Genes)")
         gene_data = []
         for gene in TARGET_GENES:
-            if gene == "C6orf150":
-                gene_data.append({"Gene": gene, "Alternative Name": "cGAS", "Function": "Cytosolic DNA sensor"})
-            elif gene == "TMEM173":
-                gene_data.append({"Gene": gene, "Alternative Name": "STING", "Function": "Adaptor protein for cGAS"})
-            elif gene == "CXCL8":
-                gene_data.append({"Gene": gene, "Alternative Name": "IL8", "Function": "Proinflammatory chemokine"})
-            else:
-                gene_data.append({"Gene": gene, "Alternative Name": "", "Function": "Pathway component"})
+            gene_data.append({"Gene": gene, "Function": "Cancer-related gene"})
         
         st.table(pd.DataFrame(gene_data))
     
@@ -334,4 +420,4 @@ def main():
         display_visualizations()
 
 if __name__ == "__main__":
-    main() 
+    main()
