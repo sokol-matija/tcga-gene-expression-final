@@ -9,20 +9,36 @@ import matplotlib.pyplot as plt
 import time
 import base64
 from io import BytesIO
+import seaborn as sns
 
 # Import our modules
 from scraper import download_all_datasets, download_clinical_data, get_sample_dataset
 from storage import ensure_bucket_exists, upload_file, download_file, list_objects
 from processor import process_tsv_file, merge_with_clinical_data, calculate_pathway_score
-from database import insert_patient_data, get_patient_data, get_unique_cohorts, get_patient_count, clear_collection
+from database import (
+    insert_patient_data, 
+    get_patient_data, 
+    get_unique_cohorts, 
+    get_patient_count, 
+    clear_collection,
+    get_cohort_counts,
+    get_gene_expression_stats,
+    get_patient_sample
+)
 from visualizer import (
     plot_gene_expressions_by_cohort, 
     plot_heatmap, 
     plot_gene_correlation,
     plot_pathway_scores,
-    get_figure_as_base64
+    get_figure_as_base64,
+    plot_patients_by_cohort
 )
-from config import TARGET_GENES
+from config import (
+    TARGET_GENES, 
+    CACHE_TTL, 
+    MAX_VISUALIZATION_SAMPLES,
+    MAX_HEATMAP_PATIENTS
+)
 
 # Set page configuration
 st.set_page_config(
@@ -33,6 +49,74 @@ st.set_page_config(
 
 # Create directories if they don't exist
 os.makedirs("data", exist_ok=True)
+
+# Add caching for database queries - use CACHE_TTL from config
+@st.cache_data(ttl=CACHE_TTL)
+def cached_get_unique_cohorts():
+    """
+    Cached wrapper for get_unique_cohorts.
+    Returns a list of unique cancer cohorts in the database.
+    """
+    return get_unique_cohorts()
+
+@st.cache_data(ttl=CACHE_TTL)
+def cached_get_patient_data(query=None, limit=None):
+    """
+    Cached wrapper for get_patient_data.
+    
+    Args:
+        query (dict, optional): Query to filter results. If None, get all documents.
+        limit (int, optional): Maximum number of documents to retrieve.
+        
+    Returns:
+        list: List of matching documents
+    """
+    return get_patient_data(query, limit)
+
+@st.cache_data(ttl=CACHE_TTL)
+def cached_get_patient_count():
+    """
+    Cached wrapper for get_patient_count.
+    Returns the total number of patient records in the database.
+    """
+    return get_patient_count()
+
+# Add caching for our new optimized functions
+@st.cache_data(ttl=CACHE_TTL)
+def cached_get_cohort_counts():
+    """
+    Cached wrapper for get_cohort_counts.
+    Returns a dictionary of cohorts and their patient counts.
+    """
+    return get_cohort_counts()
+
+@st.cache_data(ttl=CACHE_TTL)
+def cached_get_gene_expression_stats(cohort, gene=None):
+    """
+    Cached wrapper for get_gene_expression_stats.
+    
+    Args:
+        cohort (str): Cancer cohort name
+        gene (str, optional): Specific gene to get statistics for
+        
+    Returns:
+        list: List of dictionaries with gene expression statistics
+    """
+    return get_gene_expression_stats(cohort, gene)
+
+@st.cache_data(ttl=CACHE_TTL)
+def cached_get_patient_sample(cohort, limit=MAX_VISUALIZATION_SAMPLES):
+    """
+    Cached wrapper for get_patient_sample.
+    
+    Args:
+        cohort (str): Cancer cohort name
+        limit (int): Maximum number of patients to retrieve
+        
+    Returns:
+        list: Sample of patient documents
+    """
+    return get_patient_sample(cohort, limit)
 
 def fetch_and_store_data(use_sample_data=False, max_datasets=1, use_local_files=False, local_files_dir="data_test"):
     """
@@ -177,18 +261,19 @@ def display_data_info():
     """Display information about the data in the database."""
     
     # Get patient count
-    patient_count = get_patient_count()
-    cohorts = get_unique_cohorts()
+    patient_count = cached_get_patient_count()
+    
+    # Get cohort counts using optimized function
+    cohort_counts = cached_get_cohort_counts()
     
     # Display info
     st.subheader("Database Information")
     st.write(f"Total patients: {patient_count}")
     
-    if cohorts:
+    if cohort_counts:
         st.write("Cancer cohorts:")
-        for cohort in cohorts:
-            cohort_patients = get_patient_data({"cancer_cohort": cohort})
-            st.write(f"- {cohort}: {len(cohort_patients)} patients")
+        for cohort, count in cohort_counts.items():
+            st.write(f"- {cohort}: {count} patients")
     else:
         st.write("No cancer cohorts found in the database")
 
@@ -196,22 +281,46 @@ def display_visualizations():
     """Display visualizations of the gene expression data."""
     
     # Get data from MongoDB
-    cohorts = get_unique_cohorts()
+    cohorts = cached_get_unique_cohorts()
     
     if not cohorts:
         st.warning("No data found in the database. Please fetch and process data first.")
         return
     
     # Create tabs for different visualization types
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Patients by Cohort",
         "Gene Expression Boxplot", 
         "Gene Expression Heatmap", 
         "Gene Correlation", 
         "Pathway Scores"
     ])
     
-    # For boxplot tab
+    # For patients by cohort tab
     with tab1:
+        st.subheader("Distribution of Patients by Cancer Cohort")
+        
+        # Use our optimized function to get cohort counts directly from MongoDB
+        with st.spinner("Loading cohort distribution..."):
+            cohort_counts = cached_get_cohort_counts()
+        
+        # Create and display the chart
+        if cohort_counts:
+            fig = plot_patients_by_cohort(cohort_counts)
+            st.pyplot(fig)
+            
+            # Display the counts in a table as well
+            st.write("### Patient Counts")
+            count_df = pd.DataFrame({
+                "Cancer Cohort": list(cohort_counts.keys()),
+                "Number of Patients": list(cohort_counts.values())
+            }).sort_values("Number of Patients", ascending=False)
+            st.dataframe(count_df)
+        else:
+            st.warning("No patient data available")
+    
+    # For boxplot tab
+    with tab2:
         st.subheader("Gene Expression by Cancer Cohort")
         
         selected_cohort = st.selectbox(
@@ -220,18 +329,31 @@ def display_visualizations():
             key="boxplot_cohort"
         )
         
-        # Filter patients by cohort
-        filtered_patients = get_patient_data({"cancer_cohort": selected_cohort})
-        
-        if filtered_patients:
-            st.write(f"Showing data for {len(filtered_patients)} patients in {selected_cohort}")
-            fig = plot_gene_expressions_by_cohort(filtered_patients)
-            st.pyplot(fig)
-        else:
-            st.warning(f"No patients found for cohort: {selected_cohort}")
+        # Use our optimized function to get expression stats
+        with st.spinner(f"Loading gene expression data for {selected_cohort}..."):
+            stats = cached_get_gene_expression_stats(selected_cohort)
+            
+            if stats:
+                # Convert to DataFrame for visualization
+                stats_df = pd.DataFrame(stats)
+                
+                # Create the plot
+                st.write(f"Showing gene expression for {len(stats)} data points in {selected_cohort}")
+                
+                # Create a custom function to use with the optimized data structure
+                fig = plt.figure(figsize=(15, 10))
+                ax = sns.boxplot(x='gene', y='expression', data=stats_df)
+                plt.title('Gene Expression by Cancer Cohort', fontsize=16)
+                plt.xlabel('Gene', fontsize=12)
+                plt.ylabel('Expression Level', fontsize=12)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.warning(f"No expression data found for cohort: {selected_cohort}")
     
     # For heatmap tab
-    with tab2:
+    with tab3:
         st.subheader("Gene Expression Heatmap")
         
         selected_cohort = st.selectbox(
@@ -243,12 +365,13 @@ def display_visualizations():
         max_patients = st.slider(
             "Maximum number of patients to display", 
             min_value=5, 
-            max_value=100, 
-            value=30
+            max_value=MAX_HEATMAP_PATIENTS, 
+            value=min(30, MAX_HEATMAP_PATIENTS)
         )
         
-        # Filter patients by cohort
-        filtered_patients = get_patient_data({"cancer_cohort": selected_cohort}, limit=max_patients)
+        # Use our optimized function to get a sample of patients
+        with st.spinner(f"Loading patient sample for {selected_cohort}..."):
+            filtered_patients = cached_get_patient_sample(selected_cohort, max_patients)
         
         if filtered_patients:
             st.write(f"Showing data for {len(filtered_patients)} patients in {selected_cohort}")
@@ -258,7 +381,7 @@ def display_visualizations():
             st.warning(f"No patients found for cohort: {selected_cohort}")
     
     # For correlation tab
-    with tab3:
+    with tab4:
         st.subheader("Gene Correlation Analysis")
         
         selected_cohort = st.selectbox(
@@ -267,18 +390,20 @@ def display_visualizations():
             key="correlation_cohort"
         )
         
-        # Filter patients by cohort
-        filtered_patients = get_patient_data({"cancer_cohort": selected_cohort})
+        # Use optimized patient sample - correlation doesn't need all patients
+        with st.spinner(f"Loading patient sample for correlation analysis..."):
+            filtered_patients = cached_get_patient_sample(selected_cohort, MAX_VISUALIZATION_SAMPLES)
         
         if filtered_patients:
             st.write(f"Showing correlation for {len(filtered_patients)} patients in {selected_cohort}")
+            st.info(f"Using a sample of up to {MAX_VISUALIZATION_SAMPLES} patients for faster correlation analysis.")
             fig = plot_gene_correlation(filtered_patients)
             st.pyplot(fig)
         else:
             st.warning(f"No patients found for cohort: {selected_cohort}")
     
     # For pathway scores tab
-    with tab4:
+    with tab5:
         st.subheader("Pathway Scores Analysis")
         
         selected_cohort = st.selectbox(
@@ -287,11 +412,13 @@ def display_visualizations():
             key="pathway_cohort"
         )
         
-        # Filter patients by cohort
-        filtered_patients = get_patient_data({"cancer_cohort": selected_cohort})
+        # Use optimized patient sample - pathway analysis doesn't need all patients
+        with st.spinner(f"Loading patient sample for pathway analysis..."):
+            filtered_patients = cached_get_patient_sample(selected_cohort, MAX_VISUALIZATION_SAMPLES)
         
         if filtered_patients:
             st.write(f"Showing pathway scores for {len(filtered_patients)} patients in {selected_cohort}")
+            st.info(f"Using a sample of up to {MAX_VISUALIZATION_SAMPLES} patients for faster pathway analysis.")
             fig = plot_pathway_scores(filtered_patients)
             st.pyplot(fig)
         else:
@@ -309,7 +436,7 @@ def main():
     
     # Database info or setup
     db_status = st.sidebar.container()
-    patient_count = get_patient_count()
+    patient_count = cached_get_patient_count()
     
     if patient_count > 0:
         db_status.success(f"MongoDB: {patient_count} patient records")

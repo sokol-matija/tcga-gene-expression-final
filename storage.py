@@ -1,5 +1,5 @@
 """
-Functions for interacting with MiniO storage.
+Functions for interacting with AWS S3 storage (using MinIO client).
 """
 
 from minio import Minio
@@ -10,21 +10,22 @@ from config import MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUC
 
 def get_minio_client():
     """
-    Create and return a MiniO client.
+    Create and return a MinIO client configured for AWS S3.
     
     Returns:
-        Minio: Configured MiniO client
+        Minio: Configured MinIO client for S3
     """
     return Minio(
         MINIO_ENDPOINT,
         access_key=MINIO_ACCESS_KEY,
         secret_key=MINIO_SECRET_KEY,
-        secure=MINIO_SECURE
+        secure=MINIO_SECURE,
+        region="us-east-1"  # Set to your AWS region
     )
 
 def ensure_bucket_exists():
     """
-    Ensure that the configured bucket exists in MiniO.
+    Ensure that the configured bucket exists in S3.
     
     Returns:
         bool: True if bucket exists or was created successfully
@@ -45,11 +46,11 @@ def ensure_bucket_exists():
 
 def upload_file(file_path, object_name=None):
     """
-    Upload a file to MiniO storage.
+    Upload a file to S3 storage.
     
     Args:
         file_path (str): Path to the file to upload
-        object_name (str, optional): Name to give the object in MiniO. 
+        object_name (str, optional): Name to give the object in S3. 
                                      If None, use the filename.
     
     Returns:
@@ -75,11 +76,11 @@ def upload_file(file_path, object_name=None):
 
 def upload_data(data, object_name):
     """
-    Upload data directly to MiniO storage.
+    Upload data directly to S3 storage.
     
     Args:
         data (bytes or str): Data to upload
-        object_name (str): Name to give the object in MiniO
+        object_name (str): Name to give the object in S3
     
     Returns:
         bool: True if successful, False otherwise
@@ -106,10 +107,10 @@ def upload_data(data, object_name):
 
 def download_file(object_name, file_path=None):
     """
-    Download a file from MiniO storage.
+    Download a file from S3 storage.
     
     Args:
-        object_name (str): Name of the object in MiniO
+        object_name (str): Name of the object in S3
         file_path (str, optional): Path to save the file to. 
                                    If None, return the data.
     
@@ -140,7 +141,7 @@ def download_file(object_name, file_path=None):
 
 def list_objects():
     """
-    List all objects in the MiniO bucket.
+    List all objects in the S3 bucket.
     
     Returns:
         list: List of object names
@@ -152,4 +153,27 @@ def list_objects():
         return [obj.object_name for obj in objects]
     except S3Error as e:
         print(f"Error listing objects: {e}")
-        return [] 
+        return []
+
+def test_s3_connection():
+    """
+    Test the S3 connection and bucket access.
+    
+    Returns:
+        bool: True if connection and bucket access successful
+    """
+    client = get_minio_client()
+    try:
+        # Check if the bucket exists
+        if client.bucket_exists(MINIO_BUCKET_NAME):
+            print(f"Successfully connected to S3 bucket: {MINIO_BUCKET_NAME}")
+            # List objects to test full access
+            objects = list(client.list_objects(MINIO_BUCKET_NAME))
+            print(f"Found {len(objects)} objects in bucket")
+            return True
+        else:
+            print(f"Bucket {MINIO_BUCKET_NAME} does not exist")
+            return False
+    except S3Error as e:
+        print(f"Error connecting to S3: {e}")
+        return False

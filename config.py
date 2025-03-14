@@ -47,4 +47,43 @@ TARGET_GENES = [
     'ATM',       # Kinase
     'IL6',       # Interleukin
     'CXCL8'      # IL8 (Interleukin 8)
-] 
+]
+
+# Pathway scoring weights
+PATHWAY_WEIGHTS = {
+    "cGAS-STING": {
+        "C6orf150": 0.3,  # cGAS
+        "TMEM173": 0.3,   # STING
+        "NFKB1": 0.1,
+        "IKBKE": 0.1,
+        "IRF3": 0.1,
+        "TREX1": 0.1
+    },
+    "Chemokines": {
+        "CCL5": 0.25,
+        "CXCL10": 0.25,
+        "CXCL9": 0.25,
+        "CXCL11": 0.25
+    },
+    "Inflammation": {
+        "IL6": 0.5,
+        "CXCL8": 0.5  # IL8
+    }
+}
+
+# Performance optimization settings
+# --------------------------------
+
+# Cache settings
+CACHE_TTL = 600  # Cache time-to-live in seconds (10 minutes)
+
+# Batch processing settings
+BATCH_SIZE = 1000  # Number of items to process in a batch
+
+# Sampling limits for visualizations
+MAX_VISUALIZATION_SAMPLES = 100  # Maximum number of patients to use for visualizations
+MAX_HEATMAP_PATIENTS = 50  # Maximum number of patients to show in heatmap
+
+# Database query optimization
+USE_AGGREGATION = True  # Whether to use MongoDB aggregation for queries
+QUERY_TIMEOUT = 30000  # MongoDB query timeout in milliseconds (30 seconds) 

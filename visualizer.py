@@ -285,6 +285,46 @@ def plot_pathway_scores(patient_data, figsize=(12, 8)):
     
     return plt.gcf()
 
+def plot_patients_by_cohort(cohort_counts, figsize=(14, 8)):
+    """
+    Create a bar chart showing the number of patients by cancer cohort.
+    
+    Args:
+        cohort_counts (dict): Dictionary mapping cohort names to patient counts
+        figsize (tuple): Figure size
+        
+    Returns:
+        matplotlib.figure.Figure: The created figure
+    """
+    # Create a DataFrame from the cohort counts
+    df = pd.DataFrame({
+        'Cohort': list(cohort_counts.keys()),
+        'Patient Count': list(cohort_counts.values())
+    })
+    
+    # Sort by patient count in descending order
+    df = df.sort_values('Patient Count', ascending=False)
+    
+    # Create the figure
+    plt.figure(figsize=figsize)
+    
+    # Create the bar chart
+    ax = sns.barplot(x='Cohort', y='Patient Count', data=df)
+    
+    # Customize the plot
+    plt.title('Number of Patients by Cancer Cohort', fontsize=16)
+    plt.xlabel('Cancer Cohort', fontsize=12)
+    plt.ylabel('Number of Patients', fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    
+    # Add value labels on top of each bar
+    for i, v in enumerate(df['Patient Count']):
+        ax.text(i, v + 0.1, str(v), ha='center', fontsize=10)
+    
+    plt.tight_layout()
+    
+    return plt.gcf()
+
 def get_figure_as_base64(fig):
     """
     Convert a matplotlib figure to a base64 encoded string.

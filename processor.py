@@ -8,12 +8,16 @@ import os
 import gzip
 from config import TARGET_GENES
 
-def read_tsv_file(file_path):
+# Add a new constant for batch size
+BATCH_SIZE = 1000  # Process 1000 patients at a time
+
+def read_tsv_file(file_path, nrows=None):
     """
-    Read a TSV file into a pandas DataFrame.
+    Read a TSV file into a pandas DataFrame with optional row limit.
     
     Args:
         file_path (str): Path to the TSV file
+        nrows (int, optional): Number of rows to read, None for all rows
         
     Returns:
         pandas.DataFrame: The loaded data
@@ -22,9 +26,9 @@ def read_tsv_file(file_path):
         # Check if the file is gzipped
         if file_path.endswith('.gz'):
             with gzip.open(file_path, 'rt') as f:
-                return pd.read_csv(f, sep='\t')
+                return pd.read_csv(f, sep='\t', nrows=nrows)
         else:
-            return pd.read_csv(file_path, sep='\t')
+            return pd.read_csv(file_path, sep='\t', nrows=nrows)
     except Exception as e:
         print(f"Error reading TSV file {file_path}: {e}")
         return None
@@ -181,6 +185,7 @@ def transform_to_patient_centric(df, cohort_name):
 def process_tsv_file(file_path):
     """
     Process a TSV file to extract gene expressions for target genes.
+    Optimized to handle large files with batching.
     
     Args:
         file_path (str): Path to the TSV file
@@ -191,90 +196,162 @@ def process_tsv_file(file_path):
     # Extract cohort name from filename
     cohort_name = os.path.basename(file_path).split('_')[0]
     
-    # Read the file
-    print(f"Reading file: {file_path}")
-    df = read_tsv_file(file_path)
-    if df is None:
-        print(f"Failed to read file: {file_path}")
+    print(f"Processing file: {file_path} for cohort: {cohort_name}")
+    
+    # First, try to determine the file structure by reading a small sample
+    print("Reading sample of the file to determine structure...")
+    sample_df = read_tsv_file(file_path, nrows=10)
+    if sample_df is None:
+        print(f"Failed to read sample from file: {file_path}")
         return []
     
     # Print info about the DataFrame
-    print(f"DataFrame shape: {df.shape}")
-    print(f"DataFrame columns (first 5): {df.columns[:5]}")
+    print(f"Sample DataFrame shape: {sample_df.shape}")
+    print(f"Sample DataFrame columns (first 5): {sample_df.columns[:5]}")
     
-    # Handle the special TCGA data format
+    # Check if we're dealing with the special TCGA format
     # The first column is often 'sample' and the gene symbols are in the row index
-    if 'sample' in df.columns and df.shape[0] > 10000:  # TCGA files often have ~20k genes
-        print("Detected TCGA format with genes as rows")
-        # Transpose the dataframe so genes become columns
-        print("Transposing dataframe to make genes the columns")
-        # First column becomes the new index
-        df = df.set_index(df.columns[0])
-        # Transpose so patients are rows, genes are columns
-        df = df.transpose()
-        print(f"After transpose, shape: {df.shape}")
+    is_tcga_format = 'sample' in sample_df.columns or sample_df.shape[1] > 100
+    
+    # Process the file in batches if it's large
+    if is_tcga_format:
+        print("Detected TCGA format with genes as rows, processing in batches...")
+        return process_tcga_format_file(file_path, cohort_name)
+    else:
+        print("Processing standard format file...")
+        return process_standard_format_file(file_path, cohort_name)
+
+def process_tcga_format_file(file_path, cohort_name):
+    """
+    Process a TCGA format file where genes are rows and patients are columns.
+    Uses chunking to handle large files efficiently.
+    
+    Args:
+        file_path (str): Path to the TSV file
+        cohort_name (str): Name of the cancer cohort
         
-        # Create a new dataframe with the genes we want
+    Returns:
+        list: List of patient dictionaries with gene expression data
+    """
+    try:
+        # Read the file
+        df = read_tsv_file(file_path)
+        if df is None:
+            print(f"Failed to read file: {file_path}")
+            return []
+        
+        print(f"DataFrame shape: {df.shape}")
+        
+        # Set the first column as index if needed
+        if df.columns[0] != 'sample' and 'sample' in df.columns:
+            df = df.set_index('sample')
+        
+        # Find which columns contain our target genes
         selected_genes = []
         for gene in TARGET_GENES:
-            if gene in df.columns:
+            if gene in df.index:
                 selected_genes.append(gene)
             else:
-                print(f"Gene {gene} not found in dataset")
-                
+                # Case-insensitive search
+                for idx in df.index:
+                    if isinstance(idx, str) and gene.upper() == idx.upper():
+                        selected_genes.append(idx)
+                        break
+        
         if not selected_genes:
             print(f"None of the target genes found in dataset {file_path}")
             # Try a fallback - look for similar gene names
-            for col in df.columns:
+            for idx in df.index:
                 for gene in TARGET_GENES:
-                    if gene.upper() in str(col).upper():
-                        print(f"Found potential match: {col} for {gene}")
-                        selected_genes.append(col)
-                        
+                    if isinstance(idx, str) and gene.upper() in idx.upper():
+                        print(f"Found potential match: {idx} for {gene}")
+                        selected_genes.append(idx)
+        
         if not selected_genes:
             print(f"Still couldn't find any target genes in {file_path}")
             return []
+        
+        # Extract just the expression data for selected genes
+        gene_df = df.loc[selected_genes]
+        
+        # Process patients in batches
+        all_patients = []
+        
+        # Get column batches
+        for i in range(0, len(gene_df.columns), BATCH_SIZE):
+            print(f"Processing batch {i//BATCH_SIZE + 1}")
+            batch_columns = gene_df.columns[i:i+BATCH_SIZE]
             
-        # Create patient records
-        patients = []
-        for patient_id, row in df.iterrows():
-            patient_data = {
-                "patient_id": patient_id,
-                "cancer_cohort": cohort_name,
-                "gene_expressions": {}
-            }
+            # Create patient records for this batch
+            batch_patients = []
+            for patient_id in batch_columns:
+                patient_data = {
+                    "patient_id": patient_id,
+                    "cancer_cohort": cohort_name,
+                    "gene_expressions": {}
+                }
+                
+                # Add expression values for each gene
+                for gene in selected_genes:
+                    try:
+                        expression_value = float(gene_df.loc[gene, patient_id])
+                        
+                        # Skip invalid values
+                        if not np.isnan(expression_value):
+                            patient_data["gene_expressions"][gene] = expression_value
+                    except (ValueError, TypeError):
+                        # Skip non-numeric values
+                        pass
+                
+                # Only add patients with at least one valid gene expression
+                if patient_data["gene_expressions"]:
+                    batch_patients.append(patient_data)
             
-            # Add expression values for each target gene
-            for gene in selected_genes:
-                try:
-                    expression_value = float(row[gene])
-                except (ValueError, TypeError):
-                    expression_value = str(row[gene])
-                    
-                patient_data["gene_expressions"][gene] = expression_value
-            
-            patients.append(patient_data)
-            
-        print(f"Generated {len(patients)} patient records with {len(selected_genes)} genes each")
-        return patients
-    
-    # If it's not the special TCGA format, proceed with standard processing
-    # Extract target gene expressions
-    print(f"Extracting expressions for {len(TARGET_GENES)} target genes")
-    gene_df = extract_gene_expressions(df)
-    
-    if gene_df.empty:
-        print(f"No target genes found in {file_path}")
+            # Add this batch to all patients
+            all_patients.extend(batch_patients)
+            print(f"Processed {len(batch_patients)} patients in batch {i//BATCH_SIZE + 1}")
+        
+        print(f"Total patients processed: {len(all_patients)}")
+        return all_patients
+        
+    except Exception as e:
+        print(f"Error processing TCGA format file: {e}")
         return []
+
+def process_standard_format_file(file_path, cohort_name):
+    """
+    Process a standard format file where genes are in the first column.
     
-    print(f"Found {len(gene_df)} matching genes")
-    
-    # Transform to patient-centric format
-    print("Transforming to patient-centric format")
-    patients = transform_to_patient_centric(gene_df, cohort_name)
-    
-    print(f"Generated {len(patients)} patient records")
-    return patients
+    Args:
+        file_path (str): Path to the TSV file
+        cohort_name (str): Name of the cancer cohort
+        
+    Returns:
+        list: List of patient dictionaries with gene expression data
+    """
+    try:
+        # Read the file
+        df = read_tsv_file(file_path)
+        if df is None:
+            print(f"Failed to read file: {file_path}")
+            return []
+        
+        # Extract the gene expression data
+        filtered_df = extract_gene_expressions(df)
+        
+        if filtered_df.empty:
+            print(f"No gene expressions extracted from {file_path}")
+            return []
+        
+        # Transform to patient-centric format
+        patients = transform_to_patient_centric(filtered_df, cohort_name)
+        
+        print(f"Extracted data for {len(patients)} patients")
+        return patients
+        
+    except Exception as e:
+        print(f"Error processing standard format file: {e}")
+        return []
 
 def merge_with_clinical_data(gene_data, clinical_file_path):
     """
