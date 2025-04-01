@@ -40,12 +40,43 @@ from config import (
     MAX_HEATMAP_PATIENTS
 )
 
-# Set page configuration
+# Configure page settings
 st.set_page_config(
-    page_title="TCGA Gene Expression Analyzer",
+    page_title="TCGA-PathViz",
     page_icon="🧬",
     layout="wide"
 )
+
+# Initialize session state for authentication
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets.get("APP_PASSWORD", "tcga-pathviz-2024"):
+            st.session_state.authenticated = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.markdown("# 🧬 TCGA-PathViz")
+        st.markdown("### Welcome to TCGA Gene Expression Pathway Visualization Tool")
+        st.write("Please enter the password to access the application.")
+        
+        st.text_input(
+            "Password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        
+        if "password" in st.session_state:
+            st.error("😕 Password incorrect")
+        return False
+    return True
 
 # Create directories if they don't exist
 os.makedirs("data", exist_ok=True)
@@ -546,5 +577,6 @@ def main():
     with tab2:
         display_visualizations()
 
-if __name__ == "__main__":
+# Run authentication check before main app
+if check_password():
     main()
