@@ -7,16 +7,17 @@ A system for collecting, storing, processing, and visualizing gene expression da
 This application:
 
 1. Downloads TSV files containing gene expression data from the TCGA project
-2. Stores these files in MiniO (an unstructured cloud storage solution)
+2. Stores these files in AWS S3 bucket (cloud storage)
 3. Processes the data to extract specific gene expressions for the cGAS-STING pathway
-4. Stores the processed data in MongoDB (a NoSQL database)
+4. Stores the processed data in MongoDB Atlas (cloud database)
 5. Creates visualizations of the gene expression data
 6. Optionally merges this data with clinical patient data
 
 ## System Requirements
 
-- Python 3.8 or higher
-- Docker (for running MiniO and MongoDB)
+- Python 3.11.9 (tested and working)
+- AWS S3 bucket access
+- MongoDB Atlas access
 
 ## Setup Instructions
 
@@ -44,28 +45,30 @@ source venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+playwright install
 ```
 
-### 4. Run MiniO and MongoDB with Docker
+### 4. Configure Environment Variables
 
-```bash
-# Start MiniO
-docker run -p 9000:9000 -p 9001:9001 --name minio -d \
-    -e "MINIO_ROOT_USER=minioadmin" \
-    -e "MINIO_ROOT_PASSWORD=minioadmin" \
-    minio/minio server /data --console-address ":9001"
+Create a `.env` file in the project root with your cloud service credentials:
 
-# Start MongoDB
-docker run -p 27017:27017 --name mongodb -d mongo:latest
+```env
+# AWS S3 credentials
+AWS_ACCESS_KEY_ID=your_aws_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret
+
+# MongoDB credentials
+MONGO_CONNECTION_STRING=your_mongodb_atlas_connection_string
 ```
 
 ### 5. Run the application
 
 ```bash
-streamlit run app.py
+# Note: Lower ports might be restricted on corporate laptops
+streamlit run app.py --server.port 17002
 ```
 
-The application will be available at http://localhost:8501
+The application will be available at http://localhost:17002
 
 ## Using the Application
 
@@ -84,12 +87,12 @@ The application will be available at http://localhost:8501
 
 ## Project Structure
 
-- `app.py` - Main application
+- `app.py` - Main Streamlit application
 - `config.py` - Configuration variables
-- `scraper.py` - Web scraping functionality
-- `storage.py` - MiniO storage functions
+- `scraper.py` - Web scraping functionality (using Playwright)
+- `storage.py` - AWS S3 storage functions
 - `processor.py` - Data processing functions
-- `database.py` - MongoDB functions
+- `database.py` - MongoDB Atlas functions
 - `visualizer.py` - Data visualization
 
 ## Target Genes
@@ -109,6 +112,18 @@ The application focuses on the following genes in the cGAS-STING pathway:
 - ATM
 - IL6
 - CXCL8 (IL8)
+
+## Troubleshooting
+
+1. **Port Access Issues**: If you get a socket permission error with the default Streamlit port, use a higher port number:
+   ```bash
+   streamlit run app.py --server.port 17002
+   ```
+
+2. **Browser Issues**: If you encounter browser-related errors, ensure Playwright is properly installed:
+   ```bash
+   playwright install
+   ```
 
 ## License
 

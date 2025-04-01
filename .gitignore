@@ -6,6 +6,7 @@ __pycache__/
 venv/
 env/
 ENV/
+
 .venv/
 .env/
 
@@ -47,5 +48,6 @@ build/
 
 
 venv311-new/
+venv-3.11/
 
 *.png
